@@ -1,10 +1,13 @@
 # ---- Tidepool ----
 
+*.auth
+*.log
+
 # Personal health info
 phi-*
 PHI-*
 
-# Data Science large data
+# Data Science large projects
 *nogit*
 
 # Pycharm

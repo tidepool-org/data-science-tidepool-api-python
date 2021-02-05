@@ -1,5 +1,11 @@
 __author__ = "Cameron Summers"
 
+DATESTAMP_FORMAT = "%Y-%m-%d"
+API_DATA_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+
+API_NOTE_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+
+
 USER_IDS_QA = [
     'f597f21dcd', '0ef51a0121', '38c3795fcb', '69c99b51f6', '84c2cdd947',
     '9cdebdc316', '9daaf4d4c1', 'bdf4724bed', 'c7415b5097', 'dccc3baf63',

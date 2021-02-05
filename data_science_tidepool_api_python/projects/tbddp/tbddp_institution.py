@@ -1,14 +1,21 @@
 __author__ = "Cameron Summers"
 
-import os
-import json
+"""
+Functionality related to partner institutions for the Tidepool Big Data Donation Project.
+
+When a Tidepool user signs up for the project, they can specify which institutions they
+want to support.
+"""
+
 import datetime as dt
 from collections import defaultdict
+import logging
 
-from data_science_tidepool_api_python.makedata.tidepool_api import TidepoolAPI
-from data_science_tidepool_api_python.data.tbddp import read_tbddp_auth
+from data_science_tidepool_api_python.makedata.tidepool_api import TidepoolAPI, accept_pending_share_invitations
+from data_science_tidepool_api_python.projects.tbddp.tbddp import get_tbddp_auth
 from data_science_tidepool_api_python.util import USER_IDS_QA
 
+logger = logging.getLogger(__name__)
 
 DONOR_INSTITUTION_KEYS = [
     "AADE",
@@ -20,7 +27,7 @@ DONOR_INSTITUTION_KEYS = [
     "DIATRIBE",
     "diabetessisters",
     "DYF",
-    "JDRF",
+    "JDRF",  # Juvenile Diabetes Research Foundation
     "NSF",  # NIghtscout Foundation
     "T1DX"
 ]
@@ -31,32 +38,18 @@ DONOR_INSTITUTION_KEYS = [
 # TODO: Add README on how to symlink auth and run this code
 
 
-def accept_all_pending_invitations(tbddp_auth):
+def accept_all_pending_share_invitations(tbddp_auth):
     """
     Accept pending invitations for partnering institutions in Tidepool Big Data Donation Project.
 
     Args:
         tbddp_auth:
     """
-
     for institution_id  in DONOR_INSTITUTION_KEYS:
 
         institution_auth = tbddp_auth[institution_id]
-        tp_api = TidepoolAPI(institution_auth["email"], institution_auth["password"])
-
-        tp_api.login()
-        invitations, failed_accept_invitations = tp_api.accept_observer_invitations()
-
-        if invitations is not None:
-            print(institution_id, "Num Invitations {},".format(len(invitations)), "Num Failed Acceptance {}".format(len(failed_accept_invitations)))
-
-            if len(failed_accept_invitations) > 0:
-                file_to_write = open("{}_failed_invitation_acceptance_{}.json".format(institution_id, dt.datetime.now().isoformat()), "w")
-                json.dump(failed_accept_invitations, file_to_write)
-        else:
-            print("No invitations for {}".format(institution_id))
-
-        tp_api.logout()
+        username, password = (institution_auth["email"], institution_auth["password"])
+        accept_pending_share_invitations(username, password)
 
 
 def determine_donation_payout_percentages(tbddp_auth):
@@ -89,7 +82,8 @@ def determine_donation_payout_percentages(tbddp_auth):
 
     # Remove test users that Tidepool uses for QA
     for fake_user in USER_IDS_QA:
-        del user_institution_map[fake_user]
+        if fake_user in user_institution_map:
+            del user_institution_map[fake_user]
 
     # Divide their contribution among institutions
     institution_sums = defaultdict(float)
@@ -103,17 +97,15 @@ def determine_donation_payout_percentages(tbddp_auth):
     total = sum(institution_sums.values())
     for institution_id, contribution_sum in institution_sums.items():
         fraction_percentage = round(contribution_sum / total * 100, 2)
-        print(institution_id, fraction_percentage)
+        logger.info(institution_id, fraction_percentage)
 
 
 if __name__ == "__main__":
 
-    path_to_auth_symlink = "tbddp.auth"
-    path_to_auth = os.readlink(path_to_auth_symlink)
-    tbddp_auth = read_tbddp_auth(path_to_auth)
+    tbddp_auth = get_tbddp_auth()
 
-    # Accept invitations to get data up to date
-    accept_all_pending_invitations(tbddp_auth)
+    # Accept invitations to get projects up to date
+    accept_all_pending_share_invitations(tbddp_auth)
 
     # Get percentages
-    determine_donation_payout_percentages(tbddp_auth)
+    # determine_donation_payout_percentages(tbddp_auth)

@@ -2,7 +2,7 @@ __author__ = "Cameron Summers"
 
 # -*- coding: utf-8 -*-
 """
-Utilities for downloading data from Tidepool API
+Utilities for downloading projects from Tidepool API
 
 Reference: https://developer.tidepool.org/tidepool-api/index/
 """
@@ -11,27 +11,11 @@ import os
 import datetime as dt
 import sys
 import requests
-import json
-import argparse
 
 import logging
+from data_science_tidepool_api_python.util import DATESTAMP_FORMAT
 
-# create logger with 'spam_application'
-logger = logging.getLogger('TidepoolAPI')
-logger.setLevel(logging.DEBUG)
-# create file handler which logs even debug messages
-fh = logging.FileHandler('tidepool_api.log')
-fh.setLevel(logging.DEBUG)
-logger.addHandler(fh)
-
-# logging.basicConfig(filename="api.log",
-#                             filemode='a',
-#                             format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
-#                             datefmt='%H:%M:%S',
-#                             level=logging.DEBUG)
-
-
-date_only_format = "%Y-%m-%d"
+logger = logging.getLogger(__name__)
 
 
 def read_auth_csv(path_to_csv):
@@ -53,7 +37,10 @@ def read_auth_csv(path_to_csv):
 
 class TidepoolAPI(object):
     """
-    Object to wrap and organize calls to the Tidepool API for Data Science.
+    Class representing a user with a Tidepool account.
+
+    # TODO: Add checks and enforcement for order of events
+    # TODO: Add helper functions for getting earlier/latest data
     """
 
     def __init__(self, username, password):
@@ -62,44 +49,56 @@ class TidepoolAPI(object):
 
         self.user_data_url = "https://api.tidepool.org/data/{user_id}"
         self.logout_url = "https://api.tidepool.org/auth/logout"
-
         self.users_sharing_to_url = "https://api.tidepool.org/metadata/users/{user_id}/users"
         self.users_sharing_with_url = "https://api.tidepool.org/access/groups/{user_id}"
-
         self.invitations_url = "https://api.tidepool.org/confirm/invitations/{user_id}"
         self.accept_invitations_url = "https://api.tidepool.org/confirm/accept/invite/{observer_id}/{user_id}"
+        self.user_notes_url = "https://api.tidepool.org/message/notes/{user_id}"
 
         self.username = username
         self.password = password
 
-        self.login_user_id = None
-        self.login_headers = None
+        self._login_user_id = None
+        self._login_headers = None
 
-        # TODO: Decorator functions to check for login, errors, etc.
-        # TODO: Add more logging
-        # TODO: Add docstrings and comments
+    def _check_login(func):
+        """
+        Decorator for enforcing login.
+        """
+        def is_logged_in(self, *args, **kwargs):
+            if self._login_headers is None or self._login_user_id is None:
+                raise Exception("Not logged in.")
+            return func(self, *args, **kwargs)
+        return is_logged_in
+
+    def _check_http_error(func):
+        """
+        Decorator to batch handle failed http requests.
+        """
+        def response_is_ok(self, *args, **kwargs):
+            try:
+                return func(self, *args, **kwargs)
+            except requests.HTTPError as e:
+                logger.info("Failed request. HTTPError: {}".format(e))
+        return response_is_ok
 
     def login(self):
         """
         Login to Tidepool API
-
-        Args:
-            auth:
-
-        Returns:
-
         """
         login_response = requests.post(self.login_url, auth=(self.username, self.password))
 
         xtoken = login_response.headers["x-tidepool-session-token"]
         user_id_master = login_response.json()["userid"]
 
-        self.login_user_id = user_id_master
-        self.login_headers = {
+        self._login_user_id = user_id_master
+        self._login_headers = {
             "x-tidepool-session-token": xtoken,
             "Content-Type": "application/json"
         }
 
+    @_check_http_error
+    @_check_login
     def logout(self):
         """
         Logout of Tidepool API
@@ -111,8 +110,10 @@ class TidepoolAPI(object):
 
         """
         logout_response = requests.post(self.logout_url, auth=(self.username, self.password))
+        logout_response.raise_for_status()
 
-    def get_observer_invitations(self):
+    @_check_login
+    def get_pending_observer_invitations(self):
         """
         Get pending invitations that have been sent to an observer.
 
@@ -123,15 +124,18 @@ class TidepoolAPI(object):
         Returns:
             list of invitation json objects
         """
+        try:
+            invitations_url = self.invitations_url.format(**{"user_id": self._login_user_id})
+            invitations_response = requests.get(invitations_url, headers=self._login_headers)
+            invitations_response.raise_for_status()
 
-        invitations_url = self.invitations_url.format(**{"user_id": self.login_user_id})
-        invitations_response = requests.get(invitations_url, headers=self.login_headers)
-        invitations_response.raise_for_status()
-
-        pending_invitations_json = invitations_response.json()
+            pending_invitations_json = invitations_response.json()
+        except requests.HTTPError:
+            pending_invitations_json = []
 
         return pending_invitations_json
 
+    @_check_login
     def accept_observer_invitations(self):
         """
         Get pending invitations sent to an observer and accept them.
@@ -144,98 +148,176 @@ class TidepoolAPI(object):
             (list, list)
             pending
         """
+        pending_invitations_json = self.get_pending_observer_invitations()
 
-        try:
-            pending_invitations_json = self.get_observer_invitations()
+        total_invitations = len(pending_invitations_json)
+        logger.info("Num pending invitations {}".format(total_invitations))
 
-            total_invitations = len(pending_invitations_json)
-            logger.info("Num pending invitations {}".format(total_invitations))
+        invitation_accept_failed = []
 
-            invitation_accept_failed = []
+        for i, invitation in enumerate(pending_invitations_json):
 
-            for i, invitation in enumerate(pending_invitations_json):
+            try:
+                share_key = invitation["key"]
+                user_id = invitation["creatorId"]
+                accept_url = self.accept_invitations_url.format(**{"observer_id": self._login_user_id, "user_id": user_id})
 
-                try:
-                    share_key = invitation["key"]
-                    user_id = invitation["creatorId"]
-                    accept_url = self.accept_invitations_url.format(**{"observer_id": self.login_user_id, "user_id": user_id})
+                accept_response = requests.put(accept_url, headers=self._login_headers, json={"key": share_key})
+                accept_response.raise_for_status()
 
-                    accept_response = requests.put(accept_url, headers=self.login_headers, json={"key": share_key})
-                    accept_response.raise_for_status()
+            except requests.HTTPError as e:
+                invitation_accept_failed.append((e, invitation))
 
-                except Exception as e:
-                    invitation_accept_failed.append((e, invitation))
-
-                if i % 20 == 0:
-                    num_failed = len(invitation_accept_failed)
-                    logger.info("Accepted {}. Failed {}. Out of {}".format(i - num_failed, num_failed, total_invitations))
-
-        except:
-            pending_invitations_json, invitation_accept_failed = (None, None)
+            if i % 20 == 0:
+                num_failed = len(invitation_accept_failed)
+                logger.info("Accepted {}. Failed {}. Out of {}".format(i - num_failed, num_failed, total_invitations))
 
         return pending_invitations_json, invitation_accept_failed
 
-    def get_user_event_data(self, start_date, end_date):
+    @_check_http_error
+    @_check_login
+    def get_user_event_data(self, start_date, end_date, observed_user_id=None):
+        """
+        Get health event data for user. TODO: Make more flexible
 
-        start_date_str = start_date.strftime(date_only_format) + "T00:00:00.000Z"
-        end_date_str = end_date.strftime(date_only_format) + "T23:59:59.999Z"
+        Args:
+            start_date (dt.datetime): Start date of data, inclusive
+            end_date (dt.datetime): End date of data, inclusive of entire day
+            observed_user_id (str): Optional id of observed user if login id is clinician/study
 
+        Returns:
+            list: List of events as objects
+        """
+        user_id = self._login_user_id
+        if observed_user_id:
+            user_id = observed_user_id
+
+        start_date_str, end_date_str = self.get_date_filter_string(start_date, end_date)
+
+        user_data_base_url = self.user_data_url.format(**{"user_id": user_id})
         user_data_url = "{url_base}?startDate={start_date}&endDate={end_date}&dexcom=true&medtronic=true&carelink=true".format(**{
-            "url_base": self.user_data_url,
-            "user_id": self.login_user_id,
+            "url_base": user_data_base_url,
             "end_date": end_date_str,
             "start_date": start_date_str,
         })
 
-        data_response = requests.get(user_data_url, headers=self.login_headers)
-        json_data = data_response.json()
+        data_response = requests.get(user_data_url, headers=self._login_headers)
+        data_response.raise_for_status()
+        user_event_data = data_response.json()
 
-        return json_data
+        return user_event_data
 
+    @_check_http_error
+    @_check_login
     def get_users_sharing_to(self):
+        """
+        Get a list of users the login id is sharing data to. The login id is typically
+        a patient and the user list is clinicians or studies.
+
+        Returns:
+            list: List of users as objects
+        """
 
         user_metadata_url = self.users_sharing_to_url.format(**{
-            "user_id": self.login_user_id
+            "user_id": self._login_user_id
         })
 
-        metadata_response = requests.get(user_metadata_url, headers=self.login_headers)
-        json_data = metadata_response.json()
-        return json_data
+        metadata_response = requests.get(user_metadata_url, headers=self._login_headers)
+        metadata_response.raise_for_status()
+        users_sharing_to = metadata_response.json()
 
+        return users_sharing_to
+
+    @_check_http_error
+    @_check_login
     def get_users_sharing_with(self):
+        """
+        Get a list of users the login id is observing. The login id is typically the
+        clinician or study and the user list is patients.
 
-        users_sharing_with_response = self.users_sharing_with_url.format(**{
-            "user_id": self.login_user_id
+        Returns:
+            list: List of users as objects
+        """
+
+        users_sharing_with_url = self.users_sharing_with_url.format(**{
+            "user_id": self._login_user_id
         })
-        users_sharing_with_response = requests.get(users_sharing_with_response, headers=self.login_headers)
+        users_sharing_with_response = requests.get(users_sharing_with_url, headers=self._login_headers)
+        users_sharing_with_response.raise_for_status()
         users_sharing_with_json = users_sharing_with_response.json()
+
         return users_sharing_with_json
 
+    @_check_http_error
+    @_check_login
+    def get_notes(self, start_date, end_date, observed_user_id=None):
+        """
+        Get notes for a user.
+        """
+        user_id = self._login_user_id
+        if observed_user_id:
+            user_id = observed_user_id
 
-if __name__ == "__main__":
+        start_date_str, end_date_str = self.get_date_filter_string(start_date, end_date)
 
-    do_it = input("You about to hit Tidepool production servers. Intentional? (y/n)")
-    if do_it != "y":
-        print("User canceled action.")
-        sys.exit(0)
+        base_notes_url = self.user_notes_url.format(**{"user_id": user_id})
+        notes_url = "{url_base}?startDate={start_date}&endDate={end_date}".format(
+            **{
+                "url_base": base_notes_url,
+                "end_date": end_date_str,
+                "start_date": start_date_str,
+            })
+        notes_response = requests.get(notes_url, headers=self._login_headers)
+        notes_response.raise_for_status()
+        notes_data = notes_response.json()
 
-    path_to_auth_csv = "../../data/PHI/tcs_auth.csv"
-    save_dir = "../../data/PHI/"
-    email, pw = read_auth_csv(path_to_auth_csv)
+        return notes_data
 
-    if 1:
+    def get_date_filter_string(self, start_date, end_date):
+        """
+        Get string representations for date filters.
 
-        start_date = dt.datetime(year=2021, month=1, day=1)
-        end_date = dt.datetime(year=2021, month=1, day=31)
-        save_path = "../../data/PHI/theo_data_{}_{}.json".format(start_date.strftime(date_only_format),
-                                                                 end_date.strftime(date_only_format))
+        Args:
+            start_date dt.DateTime: start date
+            end_date dt.Datetime: end date
 
-        tpapi = TidepoolAPI(username=email, password=pw)
-        tpapi.login()
-        json_event_data = tpapi.get_user_event_data(start_date, end_date)
-        tpapi.logout()
+        Returns:
+            (str, str): start and end date strings
+        """
 
-        json.dump(json_event_data, open(save_path, "w"))
+        start_date_str = start_date.strftime(DATESTAMP_FORMAT) + "T00:00:00.000Z"
+        end_date_str = end_date.strftime(DATESTAMP_FORMAT) + "T23:59:59.999Z"
 
-        # json.dump(json_shared_user_metadata, open(save_path, "w"), indent=4, sort_keys=True)
+        return start_date_str, end_date_str
 
+    @_check_login
+    def get_login_user_id(self):
+        """
+        Get the id of the user logged in.
+        Returns:
+            str: user id
+        """
+        return self._login_user_id
+
+
+def accept_pending_share_invitations(account_username, account_password):
+    """
+    Accept all invitations for an observer account (e.g. study). This is a common operation
+    so generalizing it here.
+
+    Args:
+        account_username (str):
+        account_password (str):
+    """
+    tp_api = TidepoolAPI(account_username, account_password)
+    tp_api.login()
+    invitations, failed_accept_invitations = tp_api.accept_observer_invitations()
+
+    if invitations is not None:
+        logger.info(account_username)
+        logger.info("\tNum Invitations {},".format(len(invitations)))
+        logger.info("\tNum Failed Acceptance {}".format(len(failed_accept_invitations)))
+    else:
+        logger.info("No invitations for {}".format(account_username))
+
+    tp_api.logout()

@@ -1,4 +1,4 @@
-name: tidepool-data-science-api-python
+name: tidepool-projects-science-api-python
 channels:
   - defaults
   - conda-forge

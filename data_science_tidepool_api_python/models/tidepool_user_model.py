@@ -6,9 +6,14 @@ from operator import itemgetter
 import numpy as np
 from scipy.stats import gmean, gstd
 
+import logging
+
+from data_science_tidepool_api_python.util import API_DATA_TIMESTAMP_FORMAT, API_NOTE_TIMESTAMP_FORMAT
 from data_science_tidepool_api_python.visualization.visualize_user_data import (
-    plot_data, plot_daily_totals
+    plot_raw_data, plot_daily_stats
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TidepoolMeasurement(object):
@@ -32,7 +37,7 @@ class TidepoolGlucoseMeasurement(TidepoolMeasurement):
 
         self.value = value
         if units == "mmol/L":
-            self.value *= 18.1223  # TODO: get the right value
+            self.value *= 18.0182
             self.units = "mg/dL"
 
 
@@ -89,14 +94,42 @@ class TidepoolTimeChange():
         self.to_tz = to_tz
 
 
+class TidepoolNote():
+
+    def __init__(self, note_time, created_time, message):
+
+        self.note_time = note_time
+        self.created_time = created_time
+        self.message = message
+
+    def has_tag(self):
+        raise NotImplementedError
+
+    def get_tags(self):
+        raise NotImplementedError
+
+
 class TidepoolUser(object):
+    """
+    Class representing a Tidepool user from their data.
+    """
 
-    def __init__(self, json_data, api_version):
+    def __init__(self, data_json, notes_json=None, api_version="v1"):
+        """
+        Args:
+            data_json (list): list of event data of any kind in Tidepool API
+            api_version (str): parser version to user
+        """
 
-        self.json_data = json_data
+        self.data_json = data_json
+        self.notes_json = notes_json
 
-        self.parser_map = {
-            "v1": self.parse_json_v1
+        self.data_parser_map = {
+            "v1": self.parse_data_json_v1
+        }
+
+        self.notes_parser_map = {
+            "v1": self.parse_notes_json_v1
         }
 
         self.basal_timeline = OrderedDict()
@@ -106,15 +139,22 @@ class TidepoolUser(object):
 
         self.time_change_timeline = OrderedDict()
 
-        self.parser_map[api_version]()
+        self.data_parser_map[api_version]()
 
-    def parse_json_v1(self):
+        self.note_timeline = OrderedDict()
+        if notes_json is not None:
+            self.notes_parser_map[api_version]()
+
+    def parse_data_json_v1(self):
+        """
+        Parse the json list into different event types
+        """
         # time example: "2020-01-02T23:15:12.611Z"
 
-        for event in self.json_data:
+        for event in self.data_json:
 
             time_str = event["time"]
-            time = dt.datetime.strptime(time_str, "%Y-%m-%dT%H:%M:%S.%fZ")
+            time = dt.datetime.strptime(time_str, API_DATA_TIMESTAMP_FORMAT)
 
             if event["type"] == "smbg":
 
@@ -153,7 +193,29 @@ class TidepoolUser(object):
             else:
                 raise Exception("Unknown event type")
 
+    def parse_notes_json_v1(self):
+        """
+        Parse the Tidepool notes json.
+        """
+        for note in self.notes_json.get("messages", []):
+
+            note_time = dt.datetime.strptime(note["timestamp"], API_NOTE_TIMESTAMP_FORMAT)
+            created_time = dt.datetime.strptime(note["createdtime"], API_NOTE_TIMESTAMP_FORMAT)
+            message = note["messagetext"]
+
+            self.note_timeline[note_time] = TidepoolNote(note_time, created_time, message)
+
     def get_total_insulin(self, start_date, end_date):
+        """
+        Get the sum of insulin with the two datetimes, inclusive.
+
+        Args:
+            start_date (dt.DateTime): start date
+            end_date (dt.DateTime): end date
+
+        Returns:
+            (float, int, float, int): sum and counts of bolus and basal
+        """
 
         total_bolus = 0.0
         num_bolus_events = 0
@@ -175,6 +237,15 @@ class TidepoolUser(object):
         return total_bolus, num_bolus_events, total_basal, num_basal_events
 
     def get_total_carbs(self, start_date, end_date):
+        """
+        Get the sum of carbs with two datetimes, inclusive.
+        Args:
+            start_date (dt.DateTime): start date
+            end_date (dt.DateTime): end date
+
+        Returns:
+            (float, int): total carbs and number of carb events
+        """
 
         total_carbs = 0.0
         num_carb_events = 0
@@ -186,6 +257,16 @@ class TidepoolUser(object):
         return total_carbs, num_carb_events
 
     def get_cgm_stats(self, start_date, end_date):
+        """
+        Compute cgm stats with dates
+
+        Args:
+            start_date (dt.DateTime): start date
+            end_date (dt.DateTime): end date
+
+        Returns:
+            (float, float): geo mean and std
+        """
 
         cgm_values = []
         for time, cgm_event in self.glucose_timeline.items():
@@ -198,16 +279,14 @@ class TidepoolUser(object):
     def detect_circadian_hr(self, start_time=dt.datetime.min, end_time=dt.datetime.max, win_radius=3):
         """
         Count carb intake per hour and use the minimum as a likely cutoff for daily circadian
-        boundary. Used for daily analysis.
-
-        TODO: Add CGM variability minimum within 2-hour windows
+        boundary. Useful for daily analysis.
 
         Args:
             start_time: datetime
-                The start date of data to use for detection
+                The start date of projects to use for detection
 
             end_time: datetime
-                The end date of data to use for detection
+                The end date of projects to use for detection
 
         Returns:
             int: hour of least carbs
@@ -223,32 +302,61 @@ class TidepoolUser(object):
 
         min_hr, min_count = min(hour_ctr.items(), key=itemgetter(1))
 
-        print(hour_ctr)
-        print(min_hr, min_count)
-
         return min_hr
 
+    def compute_daily_stats(self, start_date, end_date, use_circadian=True):
+        """
+        Compute daily stats for a user.
 
-if __name__ == "__main__":
+        Args:
+            start_date (dt.DateTime): start date
+            end_date (dt.DateTime): end date
+            use_circadian (bool): Use circadian hour instead of timestamp midnight for day boundary
 
-    # json_data = json.load(open("../../data/PHI/theo_data_2020-01-01_2020-03-30.json"))
-    # json_data = json.load(open("../../data/PHI/theo_data_2020-01-01_2020-03-30.json"))
-    json_data = json.load(open("../../data/PHI/theo_data_2021-01-01_2021-01-31.json"))
+        Returns:
+            pd.DataFrame: rows are days, columns are stats
+        """
+        #TODO: tie in to settings
 
-    theo = TidepoolUser(json_data, api_version="v1")
+        target_bg = 100
 
-    # start_datetime = dt.datetime(year=2020, month=1, day=1)
-    # end_datetime = dt.datetime(year=2020, month=1, day=1, hour=23, minute=59, second=59)
-    # circadian_hour = theo.detect_circadian_hr()
-    # circadian_hour = 0
+        circadian_hour = 0
+        if use_circadian:
+            circadian_hour = self.detect_circadian_hr()
 
-    # start_date = 1
-    # for i in range(3):
-    #     plot_start_datetime = dt.datetime(year=2020, month=1, day=start_date + i, hour=circadian_hour, minute=0, second=0)
-    #     plot_end_datetime = dt.datetime(year=2020, month=1, day=start_date + i + 1, hour=circadian_hour, minute=0, second=0)
-    #     plot_data(theo, start_date=plot_start_datetime, end_date=plot_end_datetime)
+        num_days = int((end_date - start_date).total_seconds() / 3600 / 24)
 
-    daily_total_start_date = dt.datetime(year=2021, month=1, day=2)
-    daily_total_end_date = dt.datetime(year=2021, month=1, day=29)
-    plot_daily_totals(theo, daily_total_start_date, daily_total_end_date)
+        dates = []
 
+        start_datetime_withoffset = dt.datetime(year=start_date.year, month=start_date.month, day=start_date.day,
+                                                hour=circadian_hour)
+
+        daily_stats = []
+        for i in range(num_days):
+            daily_start_datetime = start_datetime_withoffset + dt.timedelta(days=i)
+            daily_end_datetime = daily_start_datetime + dt.timedelta(days=1)
+
+            dates.append(daily_start_datetime.date())
+
+            total_bolus, num_bolus_events, total_basal, num_basal_events = self.get_total_insulin(daily_start_datetime,
+                                                                                                  daily_end_datetime)
+            total_insulin = total_bolus + total_basal
+            total_carbs, num_carb_events = self.get_total_carbs(daily_start_datetime, daily_end_datetime)
+            cgm_geo_mean, cgm_geo_std = self.get_cgm_stats(daily_start_datetime, daily_end_datetime)
+            residual_cgm = cgm_geo_mean - target_bg
+
+            day_stats = {
+                "date": daily_start_datetime,
+                "total_insulin": total_insulin,
+                "total_basal": total_basal,
+                "total_bolus": total_bolus,
+                "total_carbs": total_carbs,
+                "cgm_geo_mean": cgm_geo_mean,
+                "cgm_geo_std": cgm_geo_std,
+                "carb_insulin_ratio": total_carbs / (total_insulin * 0.5),
+                "residual_cgm": residual_cgm
+            }
+
+            daily_stats.append(day_stats)
+
+        return daily_stats
