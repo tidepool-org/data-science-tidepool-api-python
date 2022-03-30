@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 # This is a symlink to the auth file in Tidepool's 1Password
 # You must be logged into 1Password for this code to read the auth
-PATH_TO_AUTH_SYMLINK = "tbddp.auth"
+this_dir = os.path.dirname(__file__)
+PATH_TO_AUTH_SYMLINK = os.path.join(this_dir, "tbddp.auth")
 TBDDP_PROJECT_ID = "bigdata"
 
 
@@ -47,27 +48,31 @@ def parse_tbddp_auth(path_to_auth):
     """
 
     auth = defaultdict(dict)
-    with open(path_to_auth, "r") as file_to_read:
-        for line in file_to_read.readlines():
 
-            if "BIGDATA_SALT" in line:
-                continue
+    try:
+        with open(path_to_auth, "r") as file_to_read:
+            for line in file_to_read.readlines():
 
-            line = line.split("\n")[0]
-            groups = line.split("=")
-            key = groups[0]
-            value = "=".join(groups[1:])  # Some passwords have equals signs
+                if "BIGDATA_SALT" in line:
+                    continue
 
-            id_match = re.search("BIGDATA_(\w+)_", key)
-            if id_match is not None:
-                institution_id = id_match.groups()[0]
-            else:
-                institution_id = "bigdata"  # Key in auth file has no id
+                line = line.split("\n")[0]
+                groups = line.split("=")
+                key = groups[0]
+                value = "=".join(groups[1:])  # Some passwords have equals signs
 
-            if "EMAIL" in key:
-                auth[institution_id]["email"] = value
-            elif "PASSWORD" in key:
-                auth[institution_id]["password"] = value
+                id_match = re.search("BIGDATA_(\w+)_", key)
+                if id_match is not None:
+                    institution_id = id_match.groups()[0]
+                else:
+                    institution_id = "bigdata"  # Key in auth file has no id
+
+                if "EMAIL" in key:
+                    auth[institution_id]["email"] = value
+                elif "PASSWORD" in key:
+                    auth[institution_id]["password"] = value
+    except FileNotFoundError:
+        logger.debug("Could not find auth file. Make sure you've clicked it in 1PW.")
 
     return auth
 

@@ -236,7 +236,7 @@ class TidepoolAPI(object):
         clinician or study and the user list is patients.
 
         Returns:
-            list: List of users as objects
+            dict: List of users as objects
         """
 
         users_sharing_with_url = self.users_sharing_with_url.format(**{
@@ -247,6 +247,20 @@ class TidepoolAPI(object):
         users_sharing_with_json = users_sharing_with_response.json()
 
         return users_sharing_with_json
+
+    @_check_http_error
+    @_check_login
+    def get_user_metadata(self, observed_user_id):
+
+        user_metadata_url = self.users_sharing_to_url.format(**{
+            "user_id": self._login_user_id
+        })
+        metadata_response = requests.get(user_metadata_url, headers=self._login_headers)
+
+        metadata_response.raise_for_status()
+        user_metadata = metadata_response.json()
+
+        return user_metadata
 
     @_check_http_error
     @_check_login
@@ -268,8 +282,12 @@ class TidepoolAPI(object):
                 "start_date": start_date_str,
             })
         notes_response = requests.get(notes_url, headers=self._login_headers)
-        notes_response.raise_for_status()
-        notes_data = notes_response.json()
+
+        try:
+            notes_response.raise_for_status()
+            notes_data = notes_response.json()
+        except requests.HTTPError:
+            notes_data = []
 
         return notes_data
 
