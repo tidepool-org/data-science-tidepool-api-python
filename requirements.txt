@@ -3,7 +3,7 @@ coverage==5.1
 flake8==3.7.9
 matplotlib==3.2.1
 mypy==0.770
-numpy==1.18.1
+numpy==1.22.0
 pandas==1.0.3
 pip-chill==1.0.0
 plotly==4.6.0
